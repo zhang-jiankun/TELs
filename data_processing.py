@@ -19,6 +19,7 @@ def read_bw_score(filename, sample=None):
     
     return df
 
+##### insulation-related functions
 
 def filter_insulation_boundaries(insul_path, window=100000, threshold=0.2):
     """ 
@@ -30,6 +31,8 @@ def filter_insulation_boundaries(insul_path, window=100000, threshold=0.2):
     insul_df = insul_df[insul_df[f'boundary_strength_{window}']>threshold] 
     insul_df = insul_df[['chrom', 'start', 'end']]
     return inful_df
+
+##### Stripe-related functions 
 
 def filter_spenn(tmp, tech, res=5000):
     
@@ -104,3 +107,76 @@ def filter_specall(tmp, tech, res=5000):
     
     return tmp_anchors, tmp_span
 
+##### Loop-related functions 
+
+def overlap_multires_loop(bedpe_small, bedpe_large, slop=5000):
+	_bedpe_small = bedpe_small.copy()
+	_bedpe_large = bedpe_large.copy()
+	_bedpe_small['name1'] = 'small_' + _bedpe_small.index.astype(str)
+	_bedpe_small['name2'] = 'small_' + _bedpe_small.index.astype(str)
+	_bedpe_large['name1'] = 'large_' + _bedpe_large.index.astype(str)
+	_bedpe_large['name2'] = 'large_' + _bedpe_large.index.astype(str)
+	bt_small = pbt.BedTool.from_dataframe(_bedpe_small)
+	bt_large = pbt.BedTool.from_dataframe(_bedpe_large)
+	overlap = bt_large.pairtopair(bt_small, type='both', slop=slop).to_dataframe(names=list(range(18)))
+	assert (overlap[6] == overlap[7]).all() # filtered large 
+	assert (overlap[14] == overlap[15]).all() # keeped small 
+	filtered_large = np.unique(overlap[6].values)
+	final_large = _bedpe_large.copy()
+	final_large = final_large[~final_large['name1'].isin(filtered_large)]
+	merged_bedpe = pd.concat([final_large, _bedpe_small], ignore_index=True)
+	return merged_bedpe
+
+def loop_classfication(chromloop, chromhmm='/dshare/xielab/analysisdata/ThreeDGene/zhangjk/GM12878-MicroC/proc_data/chromhmm/chromhmm_gm12878.bed', slop=5000): 
+	"""
+		chromhmm : ../proc_data/chromhmm/chromhmm_gm12878.bed
+		chromloop: ../analyses/loop_calling/chromosight_loops/res_5000/chromosight_loops_res_5000.bedpe
+	"""
+
+	chromHmm = pd.read_csv(chromhmm, sep='\t', names=['chrom', 'start', 'end', 'state'])
+	## chromHmm_ctcf = chromHmm[chromHmm['state']=='CTCF']
+	chromHmm_tss  = chromHmm[chromHmm['state']=='TSS']
+	chromHmm_enh  = chromHmm[(chromHmm['state']=='E') | (chromHmm['state']=='WE')]
+	# bed_ctcf = pbt.BedTool.from_dataframe(chromHmm_ctcf)
+	bed_tss  = pbt.BedTool.from_dataframe(chromHmm_tss)
+	bed_enh  = pbt.BedTool.from_dataframe(chromHmm_enh)
+
+	chromLoop = chromloop.copy()
+	chromLoop['dot1'] = 'dot1-' + chromLoop.index.astype(str)
+	chromLoop['dot2'] = 'dot2-' + chromLoop.index.astype(str)
+	dot1_bed = pbt.BedTool.from_dataframe(chromLoop[['chr1', 'start1', 'end1', 'dot1']].sort_values(['chr1', 'start1'], ascending=True)).slop(b=slop, genome='hg38')
+	dot2_bed = pbt.BedTool.from_dataframe(chromLoop[['chr2', 'start2', 'end2', 'dot2']].sort_values(['chr2', 'start2'], ascending=True)).slop(b=slop, genome='hg38')
+
+	##### identify CTCF-CTCF loops
+	# bin1_ctcf = dot1_bed.intersect(bed_ctcf, wa=True, u=True).to_dataframe()['name'].values 
+	# bin2_ctcf = dot2_bed.intersect(bed_ctcf, wa=True, u=True).to_dataframe()['name'].values 
+	# chromLoop_ctcf = chromLoop[(chromLoop.dot1.isin(bin1_ctcf)) & (chromLoop.dot2.isin(bin2_ctcf))][['chr1', 'start1', 'end1', 'chr2', 'start2', 'end2']]
+
+	##### identify promoter-enhancer loops
+	bin1_tss = dot1_bed.intersect(bed_tss, wa=True, u=True).to_dataframe()['name'].values
+	bin2_enh = dot2_bed.intersect(bed_enh, wa=True, u=True).to_dataframe()['name'].values
+	chromLoop_enhTss_1 = chromLoop[(chromLoop.dot1.isin(bin1_tss)) & (chromLoop.dot2.isin(bin2_enh))][['chr1', 'start1', 'end1', 'chr2', 'start2', 'end2']]
+	bin1_enh = dot1_bed.intersect(bed_enh, wa=True, u=True).to_dataframe()['name'].values
+	bin2_tss = dot2_bed.intersect(bed_tss, wa=True, u=True).to_dataframe()['name'].values
+	chromLoop_enhTss_2 = chromLoop[(chromLoop.dot1.isin(bin1_enh)) & (chromLoop.dot2.isin(bin2_tss))][['chr1', 'start1', 'end1', 'chr2', 'start2', 'end2']]
+	chromLoop_enhTss = pd.concat([chromLoop_enhTss_1, chromLoop_enhTss_2], ignore_index=True).sort_values(['chr1', 'start1', 'start2'], ascending=True).drop_duplicates(subset=['chr1', 'start1', 'end1', 'chr2', 'start2', 'end2'], keep='first')
+	chromLoop_enhTss_2u = pd.concat([chromLoop_enhTss, chromLoop_enhTss_1], ignore_index=True).sort_values(['chr1', 'start1', 'start2'], ascending=True).drop_duplicates(subset=['chr1', 'start1', 'end1', 'chr2', 'start2', 'end2'], keep=False)
+	
+	##### identify promoter-promoter loops
+	chromLoop_tss = chromLoop[(chromLoop.dot1.isin(bin1_tss)) & (chromLoop.dot2.isin(bin2_tss))][['chr1', 'start1', 'end1', 'chr2', 'start2', 'end2']]
+
+	return chromLoop_enhTss, chromLoop_enhTss_1, chromLoop_enhTss_2u, chromLoop_tss
+
+def extract_ctcf_loop(chromloop):
+	chromLoop = chromloop.copy()
+	chromLoop['name'] = chromLoop.index
+	dot1_bed = pbt.BedTool.from_dataframe(chromLoop[['chrom1', 'start1', 'end1', 'name']].sort_values(['chrom1', 'start1'], ascending=True))
+	dot2_bed = pbt.BedTool.from_dataframe(chromLoop[['chrom2', 'start2', 'end2', 'name']].sort_values(['chrom2', 'start2'], ascending=True))
+
+	ctcf_sites = pd.read_csv('~/database/JASPAR/results/GM12878/CTCF/ENCFF960ZGP.bed', sep='\t', header=None)[[0, 1, 2]]
+	ctcf_sites.columns = ['chrom', 'start', 'end']
+	pos_ctcf = pbt.BedTool.from_dataframe(ctcf_sites)
+
+	bin1 = dot1_bed.intersect(pos_ctcf, wa=True, u=True).to_dataframe()['name'].values
+	bin2 = dot2_bed.intersect(pos_ctcf, wa=True, u=True).to_dataframe()['name'].values
+	return chromLoop[(chromLoop['name'].isin(bin1)) & (chromLoop['name'].isin(bin2))].drop(columns=['name'])
